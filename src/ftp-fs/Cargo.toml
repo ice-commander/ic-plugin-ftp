@@ -1,0 +1,22 @@
+[package]
+name = "ic-ftp-fs"
+version = "0.1.0"
+edition = "2021"
+description = "Declares the FTP connection kind and the form the host renders for it"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ic-plugin-api = { workspace = true }
+suppaftp = "8.0.2"
+serde_json = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[features]
+default = ["export-abi"]
+export-abi = []
