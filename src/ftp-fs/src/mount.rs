@@ -14,6 +14,7 @@ struct Mounted {
     entries: Vec<IcDirEntry>,
     body: Vec<u8>,
     failure: Option<CString>,
+    said: Option<CString>,
 }
 
 impl Mounted {
@@ -71,6 +72,7 @@ pub extern "C" fn open(bytes: *const u8, len: u64, _user_data: *mut c_void) -> I
         entries: Vec::new(),
         body: Vec::new(),
         failure: None,
+        said: None,
     })) as IcFsHandle
 }
 
@@ -148,8 +150,9 @@ pub extern "C" fn is_read_only(_handle: IcFsHandle) -> c_int {
 
 pub extern "C" fn last_error(handle: IcFsHandle) -> *const c_char {
     held(handle, |mounted| {
+        mounted.said = mounted.failure.take();
         mounted
-            .failure
+            .said
             .as_ref()
             .map(|text| text.as_ptr())
             .unwrap_or(std::ptr::null())
