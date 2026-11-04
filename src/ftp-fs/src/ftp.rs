@@ -1,5 +1,6 @@
 use suppaftp::FtpStream;
 
+#[derive(Clone)]
 pub struct Config {
     pub host: String,
     pub port: u16,
@@ -16,6 +17,7 @@ pub struct Entry {
 pub struct Session {
     stream: FtpStream,
 }
+
 
 fn connect(cfg: &Config) -> Result<FtpStream, String> {
     let address = format!("{}:{}", cfg.host, cfg.port);
@@ -99,14 +101,12 @@ impl Session {
             .retr_as_stream(path)
             .map_err(|e| e.to_string())?;
         let mut body = Vec::new();
-        reader
-            .read_to_end(&mut body)
-            .map_err(|e| e.to_string())
-            .and_then(|_| {
-                self.stream
-                    .finalize_retr_stream(reader)
-                    .map_err(|e| e.to_string())
-            })?;
+        let read = reader.read_to_end(&mut body).map_err(|e| e.to_string());
+        let closed = self
+            .stream
+            .finalize_retr_stream(reader)
+            .map_err(|e| e.to_string());
+        read.and(closed)?;
         Ok(body)
     }
 
@@ -115,6 +115,26 @@ impl Session {
         self.stream
             .put_file(path, &mut cursor)
             .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn start_read(&mut self, path: &str) -> Result<impl std::io::Read, String> {
+        self.stream.retr_as_stream(path).map_err(|e| e.to_string())
+    }
+
+    pub fn start_write(&mut self, path: &str) -> Result<impl std::io::Write, String> {
+        self.stream.put_with_stream(path).map_err(|e| e.to_string())
+    }
+
+    pub fn finish_read(&mut self, data: impl std::io::Read) -> Result<(), String> {
+        self.stream
+            .finalize_retr_stream(data)
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn finish_write(&mut self, data: impl std::io::Write) -> Result<(), String> {
+        self.stream
+            .finalize_put_stream(data)
             .map_err(|e| e.to_string())
     }
 
@@ -146,6 +166,12 @@ impl Mount {
 
     pub fn config(&self) -> &Config {
         &self.cfg
+    }
+
+    pub fn second_connection(&self) -> Result<Session, String> {
+        Ok(Session {
+            stream: connect(&self.cfg)?,
+        })
     }
 
     // One retry: most servers drop an idle control connection and the next call fails.

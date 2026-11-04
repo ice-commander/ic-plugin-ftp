@@ -123,6 +123,111 @@ pub extern "C" fn list(handle: IcFsHandle, path: *const c_char) -> IcListing {
     .unwrap_or(IcListing::EMPTY)
 }
 
+struct Streaming {
+    session: ftp::Session,
+    data: Option<Transfer>,
+    owner: IcFsHandle,
+}
+
+enum Transfer {
+    Reading(Box<dyn std::io::Read>),
+    Writing(Box<dyn std::io::Write>),
+}
+
+pub extern "C" fn stream_open(
+    handle: IcFsHandle,
+    path: *const c_char,
+    mode: u32,
+) -> ic_plugin_api::IcFsStream {
+    let path = wanted(path);
+    let opened = held(handle, |mounted| {
+        let wanted = mounted.mount.config().resolve(&path);
+        let mut session = mounted.mount.second_connection()?;
+        let data = if mode == ic_plugin_api::IC_OPEN_READ {
+            Transfer::Reading(Box::new(session.start_read(&wanted)?))
+        } else {
+            Transfer::Writing(Box::new(session.start_write(&wanted)?))
+        };
+        Ok::<_, String>(Streaming {
+            session,
+            data: Some(data),
+            owner: handle,
+        })
+    });
+    match opened {
+        Some(Ok(open)) => Box::into_raw(Box::new(open)) as ic_plugin_api::IcFsStream,
+        Some(Err(reason)) => {
+            let _ = held(handle, |mounted| mounted.remember(reason));
+            std::ptr::null_mut()
+        }
+        None => std::ptr::null_mut(),
+    }
+}
+
+pub extern "C" fn stream_read(
+    stream: ic_plugin_api::IcFsStream,
+    into: *mut u8,
+    len: u64,
+) -> i64 {
+    if stream.is_null() || into.is_null() {
+        return -1;
+    }
+    let open = unsafe { &mut *(stream as *mut Streaming) };
+    let Some(Transfer::Reading(reader)) = open.data.as_mut() else {
+        return -1;
+    };
+    let room = unsafe { std::slice::from_raw_parts_mut(into, len as usize) };
+    match reader.read(room) {
+        Ok(got) => got as i64,
+        Err(e) => {
+            let _ = held(open.owner, |mounted| mounted.remember(e.to_string()));
+            -1
+        }
+    }
+}
+
+pub extern "C" fn stream_write(
+    stream: ic_plugin_api::IcFsStream,
+    from: *const u8,
+    len: u64,
+) -> i64 {
+    if stream.is_null() || from.is_null() {
+        return -1;
+    }
+    let open = unsafe { &mut *(stream as *mut Streaming) };
+    let Some(Transfer::Writing(writer)) = open.data.as_mut() else {
+        return -1;
+    };
+    let body = unsafe { std::slice::from_raw_parts(from, len as usize) };
+    match writer.write(body) {
+        Ok(took) => took as i64,
+        Err(e) => {
+            let _ = held(open.owner, |mounted| mounted.remember(e.to_string()));
+            -1
+        }
+    }
+}
+
+pub extern "C" fn stream_close(stream: ic_plugin_api::IcFsStream) -> c_int {
+    if stream.is_null() {
+        return IC_ERR_INIT_FAILED;
+    }
+    let mut open = unsafe { Box::from_raw(stream as *mut Streaming) };
+    let owner = open.owner;
+    let outcome = match open.data.take() {
+        Some(Transfer::Reading(reader)) => open.session.finish_read(reader),
+        Some(Transfer::Writing(writer)) => open.session.finish_write(writer),
+        None => Ok(()),
+    };
+    match outcome {
+        Ok(()) => IC_OK,
+        Err(reason) => {
+            let _ = held(owner, |mounted| mounted.remember(reason));
+            IC_ERR_INIT_FAILED
+        }
+    }
+}
+
 pub extern "C" fn read(handle: IcFsHandle, path: *const c_char) -> IcBytes {
     let path = wanted(path);
     held(handle, |mounted| {
@@ -251,6 +356,12 @@ pub fn vtable() -> IcFsVTable {
         action_state: None,
         cell_clicked: None,
         set_permissions: None,
+        stream_open: Some(stream_open),
+        stream_read: Some(stream_read),
+        stream_write: Some(stream_write),
+        stream_close: Some(stream_close),
+        copy_within: None,
+        on_disk: None,
     }
 }
 
