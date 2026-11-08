@@ -1,4 +1,6 @@
-use suppaftp::FtpStream;
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+use std::time::Duration;
+use suppaftp::{FtpError, FtpStream};
 
 #[derive(Clone)]
 pub struct Config {
@@ -6,6 +8,8 @@ pub struct Config {
     pub port: u16,
     pub user: String,
     pub pass: String,
+    pub connect_timeout: Option<Duration>,
+    pub request_timeout: Option<Duration>,
 }
 
 pub struct Entry {
@@ -19,13 +23,47 @@ pub struct Session {
 }
 
 
+fn dial(address: &SocketAddr, limit: Option<Duration>) -> std::io::Result<TcpStream> {
+    match limit {
+        Some(limit) => TcpStream::connect_timeout(address, limit),
+        None => TcpStream::connect(address),
+    }
+}
+
 fn connect(cfg: &Config) -> Result<FtpStream, String> {
-    let address = format!("{}:{}", cfg.host, cfg.port);
-    let mut stream = FtpStream::connect(&address).map_err(|e| e.to_string())?;
-    stream
-        .login(&cfg.user, &cfg.pass)
+    let mut failure = format!("no address for {}", cfg.host);
+    let addresses = (cfg.host.as_str(), cfg.port)
+        .to_socket_addrs()
         .map_err(|e| e.to_string())?;
-    Ok(stream)
+    for address in addresses {
+        let tcp = match dial(&address, cfg.connect_timeout) {
+            Ok(tcp) => tcp,
+            Err(e) => {
+                failure = e.to_string();
+                continue;
+            }
+        };
+        tcp.set_read_timeout(cfg.request_timeout)
+            .map_err(|e| e.to_string())?;
+        tcp.set_write_timeout(cfg.request_timeout)
+            .map_err(|e| e.to_string())?;
+        let (connect, request) = (cfg.connect_timeout, cfg.request_timeout);
+        let mut stream = FtpStream::connect_with_stream(tcp)
+            .map_err(|e| e.to_string())?
+            .passive_stream_builder(move |address| {
+                let data = dial(&address, connect).map_err(FtpError::ConnectionError)?;
+                data.set_read_timeout(request)
+                    .map_err(FtpError::ConnectionError)?;
+                data.set_write_timeout(request)
+                    .map_err(FtpError::ConnectionError)?;
+                Ok(data)
+            });
+        stream
+            .login(&cfg.user, &cfg.pass)
+            .map_err(|e| e.to_string())?;
+        return Ok(stream);
+    }
+    Err(failure)
 }
 
 impl Config {

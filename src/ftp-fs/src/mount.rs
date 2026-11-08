@@ -47,6 +47,16 @@ fn text_of(settings: &serde_json::Value, key: &str) -> Option<String> {
         .filter(|text| !text.is_empty())
 }
 
+fn limit_of(settings: &serde_json::Value, key: &str) -> Option<std::time::Duration> {
+    match text_of(settings, key)
+        .and_then(|text| text.parse::<u64>().ok())
+        .unwrap_or(20)
+    {
+        0 => None,
+        secs => Some(std::time::Duration::from_secs(secs)),
+    }
+}
+
 pub extern "C" fn open(bytes: *const u8, len: u64, _user_data: *mut c_void) -> IcFsHandle {
     if bytes.is_null() || len == 0 {
         return std::ptr::null_mut();
@@ -65,6 +75,8 @@ pub extern "C" fn open(bytes: *const u8, len: u64, _user_data: *mut c_void) -> I
             .unwrap_or(21),
         user: text_of(&settings, "user").unwrap_or_else(|| "anonymous".to_string()),
         pass: text_of(&settings, "pass").unwrap_or_default(),
+        connect_timeout: limit_of(&settings, "ic.connect_timeout_secs"),
+        request_timeout: limit_of(&settings, "ic.request_timeout_secs"),
     };
     Box::into_raw(Box::new(Mounted {
         mount: ftp::Mount::new(cfg),
@@ -138,6 +150,7 @@ pub extern "C" fn stream_open(
     handle: IcFsHandle,
     path: *const c_char,
     mode: u32,
+    _size: u64,
 ) -> ic_plugin_api::IcFsStream {
     let path = wanted(path);
     let opened = held(handle, |mounted| {
@@ -362,6 +375,7 @@ pub fn vtable() -> IcFsVTable {
         stream_close: Some(stream_close),
         copy_within: None,
         on_disk: None,
+        stream_abort: None,
     }
 }
 

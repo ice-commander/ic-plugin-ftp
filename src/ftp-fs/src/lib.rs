@@ -95,6 +95,8 @@ mod tests {
             port: 21,
             user: "ivan".to_string(),
             pass: String::new(),
+            connect_timeout: None,
+            request_timeout: None,
         };
         assert_eq!(cfg.resolve(""), "/");
         assert_eq!(cfg.resolve("/"), "/");
